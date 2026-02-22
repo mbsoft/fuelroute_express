@@ -7,7 +7,10 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "seed": "node scripts/seed.js",
-    "geocode": "node scripts/geocode_stations.js"
+    "geocode": "node scripts/geocode_stations.js",
+    "regeocode-loves": "node scripts/regeocode_loves.js",
+    "regeocode-caseys": "node scripts/regeocode_chain.js --chain CASEYS --display \"Casey's\"",
+    "regeocode-kwiktrip": "node scripts/regeocode_chain.js --chain \"KWIK TRIP\" --display \"Kwik Trip\""
   },
   "keywords": [],
   "author": "",

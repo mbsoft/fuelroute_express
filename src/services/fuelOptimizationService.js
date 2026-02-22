@@ -1,15 +1,25 @@
 const supabase = require('../config/db');
 const { dijkstra } = require('../utils/dijkstra');
 
-const BUFFER_MILES = 25;
+const BUFFER_MILES = 10;
 const BUFFER_METERS = BUFFER_MILES * 1609.34; // ST_DWithin with geography uses meters
+
+const MAX_WKT_POINTS = 500;
 
 /**
  * Build a WKT LINESTRING from route geometry points.
  * Route geometry is [[lat, lon], ...], PostGIS needs LINESTRING(lon lat, ...).
+ * Downsamples to MAX_WKT_POINTS to avoid Supabase statement timeouts on long routes.
  */
 function buildWktLineString(points) {
-  const coords = points.map((p) => `${p[1]} ${p[0]}`).join(', ');
+  let sampled = points;
+  if (points.length > MAX_WKT_POINTS) {
+    const step = (points.length - 1) / (MAX_WKT_POINTS - 1);
+    sampled = Array.from({ length: MAX_WKT_POINTS }, (_, i) =>
+      points[Math.round(i * step)]
+    );
+  }
+  const coords = sampled.map((p) => `${p[1]} ${p[0]}`).join(', ');
   return `LINESTRING(${coords})`;
 }
 

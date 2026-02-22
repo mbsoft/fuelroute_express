@@ -6,90 +6,74 @@ const routingService = require('../services/routingService');
 const fuelOptimizationService = require('../services/fuelOptimizationService');
 const { ValidationError, NotFoundError, NoPathError } = require('../utils/errors');
 
-/**
- * @openapi
- * /api/route/:
- *   get:
- *     summary: Calculate optimal fuel stops along a route
- *     description: Finds the cheapest fuel stops along a driving route using Dijkstra's algorithm on a DAG of nearby fuel stations.
- *     parameters:
- *       - in: query
- *         name: start_location
- *         required: true
- *         schema:
- *           type: string
- *         description: Starting location name (e.g. "Milford,IA")
- *       - in: query
- *         name: finish_location
- *         required: true
- *         schema:
- *           type: string
- *         description: Destination location name (e.g. "Minneapolis,MN")
- *       - in: query
- *         name: range_miles
- *         schema:
- *           type: number
- *           default: 500
- *         description: Vehicle fuel tank range in miles
- *       - in: query
- *         name: mpg
- *         schema:
- *           type: number
- *           default: 10
- *         description: Vehicle fuel efficiency in miles per gallon
- *     responses:
- *       200:
- *         description: Optimal route with fuel stops
- *       400:
- *         description: Invalid parameters or geocoding failure
- *       404:
- *         description: No route found
- *       422:
- *         description: Route exceeds vehicle range without reachable stations
- */
 router.get('/', async (req, res, next) => {
   try {
     const params = validateRouteQuery(req.query);
     console.log(`Route request: ${params.start_location} → ${params.finish_location} (range=${params.range_miles}mi, mpg=${params.mpg})`);
 
-    // 1. Geocode
-    const startCoords = await geocodingService.getCoordinates(params.start_location);
-    const finishCoords = await geocodingService.getCoordinates(params.finish_location);
+    // 1. Geocode (skip if coordinates provided directly)
+    const startCoords = (params.start_lat != null && params.start_lon != null)
+      ? { lat: params.start_lat, lon: params.start_lon }
+      : await geocodingService.getCoordinates(params.start_location);
+
+    const finishCoords = (params.finish_lat != null && params.finish_lon != null)
+      ? { lat: params.finish_lat, lon: params.finish_lon }
+      : await geocodingService.getCoordinates(params.finish_location);
 
     if (!startCoords || !finishCoords) {
       throw new ValidationError('Could not geocode locations');
     }
 
-    // 2. Get Route
-    const routeData = await routingService.getRoute(startCoords, finishCoords);
-    if (!routeData) {
+    // 2. Parse waypoints
+    const waypoints = params.waypoints
+      ? params.waypoints.split('|').map((pair) => {
+          const [lat, lon] = pair.split(',').map(Number);
+          return { lat, lon };
+        }).filter((w) => !isNaN(w.lat) && !isNaN(w.lon))
+      : [];
+
+    // 3. Get all routes (primary + alternatives)
+    const allRouteDatas = await routingService.getRoutes(startCoords, finishCoords, waypoints);
+    if (!allRouteDatas || allRouteDatas.length === 0) {
       throw new NotFoundError('No route found');
     }
 
-    // 3. Optimize Fuel Stops
-    const { stops, fuelCost } = await fuelOptimizationService.findOptimalStops(
-      routeData,
-      startCoords,
-      finishCoords,
-      params.range_miles,
-      params.mpg
+    // 4. Optimize fuel stops for each route in parallel
+    const results = await Promise.all(
+      allRouteDatas.map((routeData) =>
+        fuelOptimizationService.findOptimalStops(
+          routeData,
+          startCoords,
+          finishCoords,
+          params.range_miles,
+          params.mpg
+        ).then(({ stops, fuelCost }) => ({ routeData, stops, fuelCost }))
+         .catch(() => null) // if one route fails optimization, skip it
+      )
     );
 
-    if (stops === null) {
+    const routes = results
+      .filter((r) => r !== null && r.stops !== null)
+      .map((r, i) => ({
+        route_index: i,
+        total_distance_miles: r.routeData.distance_miles,
+        total_duration_minutes: r.routeData.duration_minutes,
+        fuel_cost: Math.round(r.fuelCost * 100) / 100,
+        stops: r.stops,
+        route_polyline: r.routeData.encodedPolyline,
+      }));
+
+    if (routes.length === 0) {
       throw new NoPathError(
         'Route exceeds vehicle range without reachable fueling stations.',
-        routeData
+        allRouteDatas[0]
       );
     }
 
     res.json({
       start: params.start_location,
       finish: params.finish_location,
-      total_distance_miles: routeData.distance_miles,
-      total_duration_minutes: routeData.duration_minutes,
-      fuel_cost: Math.round(fuelCost * 100) / 100,
-      stops,
-      route_geometry: routeData.geometry,
+      routes,
     });
   } catch (err) {
     next(err);
