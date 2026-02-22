@@ -1,34 +1,24 @@
 const axios = require('axios');
 const polyline = require('@mapbox/polyline');
-const redis = require('../config/redis');
 
-const OSRM_URL = 'http://router.project-osrm.org/route/v1/driving';
+const NB_DIRECTIONS_URL = 'https://api.nextbillion.io/directions/json';
+const NB_API_KEY = process.env.NEXTBILLION_API_KEY;
 
 async function getRoute(startCoords, endCoords) {
-  const cacheKey = `route:${startCoords.lat},${startCoords.lon}:${endCoords.lat},${endCoords.lon}`;
-
-  const cached = await redis.get(cacheKey);
-  if (cached) {
-    return JSON.parse(cached);
-  }
-
-  const url = `${OSRM_URL}/${startCoords.lon},${startCoords.lat};${endCoords.lon},${endCoords.lat}?overview=full&geometries=polyline`;
+  const url = `${NB_DIRECTIONS_URL}?origin=${startCoords.lat},${startCoords.lon}&destination=${endCoords.lat},${endCoords.lon}&mode=truck&overview=full&key=${NB_API_KEY}`;
 
   try {
-    const response = await axios.get(url, { timeout: 10000 });
+    const response = await axios.get(url, { timeout: 15000 });
 
-    if (response.data.code === 'Ok') {
+    if (response.data.status === 'Ok' && response.data.routes && response.data.routes.length > 0) {
       const route = response.data.routes[0];
-      const points = polyline.decode(route.geometry); // [[lat, lng], ...]
+      const points = polyline.decode(route.geometry);
 
-      const result = {
+      return {
         geometry: points,
         distance_miles: route.distance * 0.000621371,
         duration_minutes: route.duration / 60,
       };
-
-      await redis.set(cacheKey, JSON.stringify(result), 'EX', 3600); // 1h
-      return result;
     }
   } catch (err) {
     console.error('Error fetching route:', err.message);

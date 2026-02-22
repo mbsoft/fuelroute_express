@@ -8,7 +8,6 @@ const swaggerUi = require('swagger-ui-express');
 const swaggerSpec = require('./config/swagger');
 const routeRouter = require('./routes/route');
 const errorHandler = require('./middleware/errorHandler');
-const redis = require('./config/redis');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -50,7 +49,6 @@ const server = app.listen(PORT, () => {
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received. Shutting down...');
   server.close();
-  redis.disconnect();
   process.exit(0);
 });
 
