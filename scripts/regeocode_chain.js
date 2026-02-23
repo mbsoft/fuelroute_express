@@ -63,14 +63,18 @@ function buildQuery(row) {
  * Returns { lat, lon } or null if no usable result.
  */
 async function geocode(query) {
+  const params = {
+    q: query,
+    key: NB_API_KEY,
+    fallback: true,
+    score: 0.6,
+  };
+  const requestUrl = `${DISCOVER_URL}?${new URLSearchParams(params).toString()}`;
+  console.log(`  → GET ${requestUrl}`);
+
   try {
     const response = await axios.get(DISCOVER_URL, {
-      params: {
-        q: query,
-        key: NB_API_KEY,
-        fallback: true,
-        scoring: 0.6,
-      },
+      params,
       timeout: 10000,
     });
 
