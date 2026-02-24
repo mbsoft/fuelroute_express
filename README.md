@@ -1,6 +1,6 @@
 # FuelRoute Express
 
-A fuel cost optimization API for long-haul trucking routes. Given an origin, destination, and vehicle specs, the API calculates the cheapest fuel stops along the driving route using spatial queries and Dijkstra's shortest-path algorithm.
+A fuel cost optimization API for long-haul trucking routes. Given an origin, destination, and vehicle specs, the API calculates the cheapest fuel stops along the driving route using spatial queries and graph-based optimization with realistic fuel tracking.
 
 ## How It Works
 
@@ -8,13 +8,25 @@ A fuel cost optimization API for long-haul trucking routes. Given an origin, des
 Client Request
   → Input validation (Joi)
   → Geocode origin & destination (Nominatim)
-  → Compute truck route (NextBillion.ai Directions API)
-  → Find fuel stations within 25 mi of route (Supabase + PostGIS)
-  → Optimize fuel stops to minimize total cost (Dijkstra on a DAG)
-  → Return stops, route geometry, and total fuel cost
+  → Compute truck route + alternatives (NextBillion.ai Directions API)
+  → Find fuel stations within configurable deviation of route (Supabase + PostGIS)
+  → Build threshold-aware cost graph and solve with Dijkstra
+  → Simulate journey: compute exact gallons, cost, and fuel level at each stop
+  → Interpolate fuel levels across the full polyline for gradient rendering
+  → Return routes with stops, fuel costs, encoded polyline, and fuel level array
 ```
 
-The optimizer builds a directed acyclic graph where nodes are fuel stations (sorted by position along the route) and edge weights represent the fuel cost to travel between them. Dijkstra's algorithm finds the minimum-cost path from origin to destination, selecting only the stops that minimize total fuel spend.
+### Optimization Algorithm
+
+1. **Station discovery** — A PostGIS spatial query (`find_stations_along_route`) finds all fuel stations within `deviation_miles` of the route geometry. Each station's position along the route is computed as a fraction via `ST_LineLocatePoint`.
+
+2. **Graph construction** — Nodes are `[START, ...stations, END]`, sorted by distance along the route. Directed edges connect each node to downstream nodes within fuel range. A **refuel threshold** constraint filters edges: the truck will only stop at a station if the fuel level upon arrival would be at or below `refuel_threshold_pct`. This prevents unnecessary stops when the tank is still adequately full. Edges to the destination (END) are always permitted.
+
+3. **Cost minimization** — Edge weights represent fuel cost for the segment (`distance / mpg * price_per_gallon`). Dijkstra's algorithm finds the minimum-cost path from START to END, selecting only the stops that minimize total fuel spend while respecting the threshold constraint.
+
+4. **Journey simulation** — After Dijkstra selects the optimal stops, a forward simulation computes exact gallons purchased at each stop (fill to full at intermediate stops; buy only what's needed at the last stop), actual fuel cost, and arrival/departure fuel percentages.
+
+5. **Fuel level interpolation** — The fuel level is computed at every decoded polyline coordinate by linearly interpolating consumption between path nodes. This produces a `fuel_levels` array (integers 0–100, same length as the decoded polyline) that clients can use for gradient-colored route rendering (green at 100% through red at 20% and below).
 
 ## API
 
@@ -26,47 +38,118 @@ Calculate optimal fuel stops along a route.
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `start_location` | string | yes | — | Origin (e.g. `Columbus,OH`) |
-| `finish_location` | string | yes | — | Destination (e.g. `Minneapolis,MN`) |
-| `range_miles` | number | no | `500` | Vehicle fuel tank range in miles |
+| `start_location` | string | yes | — | Origin city/address (e.g. `Columbus, OH`) |
+| `finish_location` | string | yes | — | Destination city/address (e.g. `Minneapolis, MN`) |
+| `start_lat` | number | no | — | Origin latitude (skips geocoding if provided with `start_lon`) |
+| `start_lon` | number | no | — | Origin longitude |
+| `finish_lat` | number | no | — | Destination latitude (skips geocoding if provided with `finish_lon`) |
+| `finish_lon` | number | no | — | Destination longitude |
+| `waypoints` | string | no | — | Pipe-separated intermediate stops: `lat,lon\|lat,lon` |
+| `tank_capacity` | number | no | `250` | Fuel tank capacity in gallons |
+| `current_gallons` | number | no | `250` | Gallons of fuel currently onboard (must not exceed `tank_capacity`) |
 | `mpg` | number | no | `10` | Fuel efficiency (miles per gallon) |
+| `deviation_miles` | number | no | `10` | Max distance off-route to search for stations |
+| `refuel_threshold_pct` | number | no | `80` | Fuel level % at which the truck will consider stopping (see below) |
+| `range_miles` | number | no | — | **Legacy.** If provided without `tank_capacity`, derives `tank_capacity = range_miles / mpg` |
 
-**Example Request**
+**Refuel Threshold**
 
+The `refuel_threshold_pct` parameter controls when the truck is allowed to stop for fuel. The truck will only stop at a station if its fuel level upon arrival would be at or below this percentage. For example, with `refuel_threshold_pct=80` and a 200-gallon tank, the truck will not stop at any station until fuel drops to 160 gallons (80%) or below. Lower values mean the truck drives longer before each stop.
+
+**Waypoints**
+
+Intermediate stops are specified as pipe-separated `lat,lon` pairs. When waypoints are present, only a single route is returned (alternative routes are not available with waypoints due to routing API constraints). Waypoint coordinates should be on or near truck-accessible roads — downtown coordinates in restricted urban areas may cause routing failures.
+
+**Example Requests**
+
+New parameters (full fuel tracking):
 ```
-GET /api/route?start_location=Columbus,OH&finish_location=Minneapolis,MN&range_miles=120&mpg=10
+GET /api/route?start_location=Columbus,OH&finish_location=Minneapolis,MN
+  &tank_capacity=150&current_gallons=75&mpg=6&deviation_miles=15&refuel_threshold_pct=80
+```
+
+With coordinates and waypoints:
+```
+GET /api/route?start_location=Columbus,OH&finish_location=Minneapolis,MN
+  &start_lat=39.9612&start_lon=-82.9988&finish_lat=44.9778&finish_lon=-93.2650
+  &waypoints=41.4993,-81.6944|41.6032,-87.3345
+  &tank_capacity=200&current_gallons=100&mpg=7&deviation_miles=12
+```
+
+Legacy (backward compatible):
+```
+GET /api/route?start_location=Columbus,OH&finish_location=Minneapolis,MN&range_miles=500&mpg=10
 ```
 
 **Success Response (200)**
 
 ```json
 {
-  "start": "Columbus,OH",
-  "finish": "Minneapolis,MN",
-  "total_distance_miles": 710.4,
-  "total_duration_minutes": 645.2,
-  "fuel_cost": 198.53,
-  "stops": [
+  "start": "Columbus, OH",
+  "finish": "Minneapolis, MN",
+  "routes": [
     {
-      "station": "LOVES #466 TRAVEL STOP",
-      "city": "RICHMOND",
-      "state": "IN",
-      "price": 3.29,
-      "gallons": 12.5,
-      "cost": 41.13,
-      "lat": 39.83,
-      "lon": -84.89
+      "route_index": 0,
+      "total_distance_miles": 768.2,
+      "total_duration_minutes": 907.4,
+      "fuel_cost": 43.76,
+      "stops": [
+        {
+          "station": "Kwik Trip #593",
+          "city": "MENOMONIE",
+          "state": "WI",
+          "price": 2.968,
+          "gallons": 14.8,
+          "cost": 43.76,
+          "lat": 44.9041,
+          "lon": -91.9341,
+          "fuel_level_arriving": 2,
+          "fuel_level_after": 17
+        }
+      ],
+      "route_polyline": "encoded_polyline_string",
+      "fuel_levels": [100, 99, 98, 97, "...", 2, 17, 16, "...", 5]
     }
-  ],
-  "route_geometry": [[39.96, -82.99], ...]
+  ]
 }
 ```
+
+**Response Fields**
+
+| Field | Type | Description |
+|---|---|---|
+| `routes` | array | 1–4 route options (1 when waypoints are used) |
+| `routes[].route_index` | number | Index of this route option |
+| `routes[].total_distance_miles` | number | Total driving distance |
+| `routes[].total_duration_minutes` | number | Estimated driving time |
+| `routes[].fuel_cost` | number | Total fuel cost for all stops on this route |
+| `routes[].stops` | array | Ordered list of recommended fuel stops |
+| `routes[].stops[].station` | string | Station name |
+| `routes[].stops[].city` | string | City |
+| `routes[].stops[].state` | string | 2-letter state code |
+| `routes[].stops[].price` | number | Diesel price per gallon |
+| `routes[].stops[].gallons` | number | Gallons to purchase |
+| `routes[].stops[].cost` | number | Cost at this stop |
+| `routes[].stops[].lat` | number | Station latitude |
+| `routes[].stops[].lon` | number | Station longitude |
+| `routes[].stops[].fuel_level_arriving` | number | Fuel level % when arriving at this stop |
+| `routes[].stops[].fuel_level_after` | number | Fuel level % after refueling |
+| `routes[].route_polyline` | string | Encoded polyline (Google format) |
+| `routes[].fuel_levels` | array | Integer array (0–100) of fuel level % at each polyline coordinate, for gradient rendering |
+
+**Backward Compatibility**
+
+| Caller sends | Behavior |
+|---|---|
+| Only `range_miles=500` (legacy) | `tank_capacity = 500/mpg`, `current_gallons = tank_capacity`. Equivalent to old behavior. |
+| `tank_capacity` + `current_gallons` (new) | `range_miles` ignored. Full fuel tracking. |
+| Neither | Defaults: 250 gal tank, 250 gal onboard, 10 mpg = 2500 mi range. |
 
 **Error Responses**
 
 | Status | Condition |
 |---|---|
-| 400 | Invalid parameters or geocoding failure |
+| 400 | Invalid parameters, geocoding failure, or `current_gallons > tank_capacity` |
 | 404 | No driving route found between locations |
 | 422 | Route exceeds vehicle range without reachable stations (includes route geometry in response) |
 | 429 | Rate limit exceeded (100 requests per 24 hours) |
@@ -89,7 +172,7 @@ Raw OpenAPI 3.0.3 JSON specification.
 - **Runtime:** Node.js 20, Express 5
 - **Database:** Supabase (PostgreSQL + PostGIS)
 - **Geocoding:** OpenStreetMap Nominatim (route endpoints), NextBillion.ai Discover (fuel stations)
-- **Routing:** NextBillion.ai Directions API (truck mode)
+- **Routing:** NextBillion.ai Directions API (truck mode, up to 3 alternative routes)
 - **Infrastructure:** Google Cloud Run, Artifact Registry, Secret Manager (Terraform)
 
 ## Prerequisites
@@ -174,6 +257,11 @@ The main fuel station table used by the API.
 | `state` | text | 2-letter state code |
 | `rack_id` | integer | Rack pricing ID (0 for imported) |
 | `retail_price` | numeric | Diesel retail price per gallon |
+| `our_price` | numeric(6,3) | Discounted price |
+| `savings` | numeric(6,3) | Savings vs retail |
+| `fee` | numeric(6,3) | Transaction fee |
+| `your_price` | numeric(6,3) | Net price after fee |
+| `your_savings` | numeric(6,3) | Net savings after fee |
 | `latitude` | double precision | WGS84 latitude |
 | `longitude` | double precision | WGS84 longitude |
 | `location` | geometry(Point, 4326) | PostGIS geometry for spatial queries |
@@ -205,12 +293,35 @@ Temporary table for bulk-importing fuel price data from CSV files.
 | `npm run dev` | Start with file watching (auto-restart) |
 | `npm run geocode` | Geocode staging table stations and insert into main table |
 | `npm run geocode -- --schema` | Print the `fuel_api_fuelstation` table schema |
+| `npm run update-prices -- <csv-file>` | Update fuel prices from a vendor CSV file |
+| `npm run regeocode-loves` | Re-geocode Loves stations |
+| `npm run regeocode-caseys` | Re-geocode Casey's stations |
+| `npm run regeocode-kwiktrip` | Re-geocode Kwik Trip stations |
 
 ## Deployment
 
-The project deploys to **Google Cloud Run** with infrastructure managed by **Terraform**.
+The project deploys to **Google Cloud Run**.
+
+### Build & Deploy
+
+```bash
+bash deploy.sh
+```
+
+This script:
+1. Detects GCP project and region from `gcloud config` (overridable via `GCP_PROJECT_ID` and `GCP_REGION` env vars)
+2. Creates an Artifact Registry repository if it doesn't exist
+3. Builds the Docker image (`linux/amd64`, Node 20 slim)
+4. Pushes to Artifact Registry
+5. Creates or updates the Cloud Run service
 
 ### Infrastructure (Terraform)
+
+Optional Terraform configuration is available in `terraform/` for managing:
+- **Artifact Registry** — Docker image repository
+- **Secret Manager** — stores `SUPABASE_SERVICE_ROLE_KEY` and `NEXTBILLION_API_KEY`
+- **Cloud Run v2 service** — scales 0–2 instances, 1 vCPU / 512 Mi RAM, public ingress
+- **Service account** — dedicated identity with secret access
 
 ```bash
 cd terraform
@@ -220,20 +331,6 @@ cp terraform.tfvars.example terraform.tfvars
 terraform init
 terraform apply
 ```
-
-Terraform provisions:
-- **Artifact Registry** — Docker image repository
-- **Secret Manager** — stores `SUPABASE_SERVICE_ROLE_KEY` and `NEXTBILLION_API_KEY`
-- **Cloud Run v2 service** — scales 0–2 instances, 1 vCPU / 512 Mi RAM, public ingress
-- **Service account** — dedicated identity with secret access
-
-### Build & Deploy
-
-```bash
-bash deploy.sh
-```
-
-This builds the Docker image (`linux/amd64`, Node 20 slim), pushes to Artifact Registry, and updates the Cloud Run service.
 
 ## Project Structure
 
@@ -249,18 +346,22 @@ This builds the Docker image (`linux/amd64`, Node 20 slim), pushes to Artifact R
 │   │   └── route.js                # GET /api/route endpoint
 │   ├── services/
 │   │   ├── geocodingService.js     # Nominatim geocoder
-│   │   ├── routingService.js       # NextBillion.ai directions
-│   │   └── fuelOptimizationService.js  # Dijkstra fuel optimizer
+│   │   ├── routingService.js       # NextBillion.ai directions + alternatives
+│   │   └── fuelOptimizationService.js  # Threshold-aware Dijkstra fuel optimizer
 │   └── utils/
 │       ├── dijkstra.js             # Min-heap Dijkstra implementation
 │       ├── errors.js               # Custom error classes
 │       └── validation.js           # Joi request validation
 ├── scripts/
 │   ├── geocode_stations.js         # Bulk geocode + insert stations
+│   ├── regeocode_chain.js          # Re-geocode a station chain
+│   ├── regeocode_loves.js          # Re-geocode Loves stations
+│   ├── update_price_columns.js     # Update prices from vendor CSV
+│   ├── transform_caseys_csv.js     # Transform Casey's CSV to standard format
 │   ├── create_rpc_function.sql     # PostGIS RPC function
 │   ├── import_fuel_prices.sql      # CSV import workflow
 │   └── insert_fuel_prices.sql      # Bulk INSERT seed data
-├── terraform/                      # GCP infrastructure
+├── terraform/                      # GCP infrastructure (optional)
 ├── Dockerfile
 ├── deploy.sh
 └── .env.example

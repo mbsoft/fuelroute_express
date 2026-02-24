@@ -7,6 +7,7 @@ const rateLimit = require('express-rate-limit');
 const swaggerUi = require('swagger-ui-express');
 const swaggerSpec = require('./config/swagger');
 const routeRouter = require('./routes/route');
+const stationsRouter = require('./routes/stations');
 const errorHandler = require('./middleware/errorHandler');
 
 const app = express();
@@ -33,6 +34,7 @@ app.get('/health', (req, res) => {
 
 // API routes
 app.use('/api/route', routeRouter);
+app.use('/api/stations', stationsRouter);
 
 // Swagger documentation
 app.use('/api/schema/swagger-ui', swaggerUi.serve, swaggerUi.setup(swaggerSpec));

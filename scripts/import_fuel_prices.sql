@@ -33,9 +33,14 @@ TRUNCATE fuel_price_import;
 -- SELECT count(*) FROM fuel_price_import;
 -- SELECT * FROM fuel_price_import LIMIT 10;
 
--- 5. Update retail prices in the main fuel station table by matching on city, state, and address
+-- 5. Update prices in the main fuel station table by matching on city, state, and name
 UPDATE fuel_api_fuelstation fs
-SET retail_price = imp.retail_price
+SET retail_price = imp.retail_price,
+    our_price    = imp.our_price,
+    savings      = imp.savings,
+    fee          = imp.fee,
+    your_price   = imp.your_price,
+    your_savings = imp.your_savings
 FROM fuel_price_import imp
 WHERE UPPER(TRIM(fs.city)) = UPPER(TRIM(imp.city))
   AND UPPER(TRIM(fs.state)) = UPPER(TRIM(imp.state))

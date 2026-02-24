@@ -10,10 +10,12 @@
  *   node scripts/regeocode_chain.js --chain "CASEYS" --display "Casey's" [--dry-run]
  *   node scripts/regeocode_chain.js --chain "KWIK TRIP" --display "Kwik Trip" [--dry-run]
  *   node scripts/regeocode_chain.js --chain "LOVES" --display "Loves" [--dry-run]
+ *   node scripts/regeocode_chain.js --missing [--dry-run]
  *
  * Options:
  *   --chain     DB name prefix to match (case-insensitive ilike)
  *   --display   Brand name to use in the Discover query (defaults to --chain value)
+ *   --missing   Geocode all stations with latitude = 0 (uses station name in query)
  *   --dry-run   Geocode without writing any updates
  */
 require('dotenv').config();
@@ -39,22 +41,27 @@ function getArg(flag) {
   return idx !== -1 && args[idx + 1] ? args[idx + 1] : null;
 }
 
+const MISSING_MODE = args.includes('--missing');
 const CHAIN_PREFIX = getArg('--chain');
 const DISPLAY_NAME = getArg('--display') ?? CHAIN_PREFIX;
 
-if (!CHAIN_PREFIX) {
+if (!CHAIN_PREFIX && !MISSING_MODE) {
   console.error('Usage: node scripts/regeocode_chain.js --chain <prefix> [--display <name>] [--dry-run]');
+  console.error('       node scripts/regeocode_chain.js --missing [--dry-run]');
   console.error('Examples:');
   console.error('  node scripts/regeocode_chain.js --chain "CASEYS" --display "Casey\'s"');
   console.error('  node scripts/regeocode_chain.js --chain "KWIK TRIP" --display "Kwik Trip"');
+  console.error('  node scripts/regeocode_chain.js --missing');
   process.exit(1);
 }
 
 /**
  * Build the Discover query: "{displayName} {address} {city} {state}"
+ * In --missing mode, uses the station's own name instead of the display name.
  */
 function buildQuery(row) {
-  const parts = [DISPLAY_NAME, row.address, row.city, row.state].filter(Boolean);
+  const label = MISSING_MODE ? row.name : DISPLAY_NAME;
+  const parts = [label, row.address, row.city, row.state].filter(Boolean);
   return parts.join(' ');
 }
 
@@ -94,7 +101,9 @@ async function geocode(query) {
 }
 
 /**
- * Fetch all stations whose name starts with CHAIN_PREFIX (case-insensitive).
+ * Fetch stations to re-geocode.
+ * --missing mode: all stations with latitude = 0
+ * --chain mode: all stations whose name starts with CHAIN_PREFIX
  */
 async function fetchStations() {
   const rows = [];
@@ -102,11 +111,17 @@ async function fetchStations() {
   const pageSize = 1000;
 
   while (true) {
-    const { data, error } = await supabase
+    let query = supabase
       .from('fuel_api_fuelstation')
-      .select('id, name, address, city, state, latitude, longitude')
-      .ilike('name', `${CHAIN_PREFIX}%`)
-      .range(offset, offset + pageSize - 1);
+      .select('id, name, address, city, state, latitude, longitude');
+
+    if (MISSING_MODE) {
+      query = query.eq('latitude', 0);
+    } else {
+      query = query.ilike('name', `${CHAIN_PREFIX}%`);
+    }
+
+    const { data, error } = await query.range(offset, offset + pageSize - 1);
 
     if (error) throw new Error(`Failed to fetch stations: ${error.message}`);
     if (!data || data.length === 0) break;
@@ -144,11 +159,17 @@ function sleep(ms) {
 }
 
 async function main() {
-  console.log(`Chain prefix: "${CHAIN_PREFIX}"  Display name: "${DISPLAY_NAME}"`);
+  if (MISSING_MODE) {
+    console.log('Mode: --missing (all stations with latitude = 0)');
+  } else {
+    console.log(`Chain prefix: "${CHAIN_PREFIX}"  Display name: "${DISPLAY_NAME}"`);
+  }
   if (DRY_RUN) console.log('[DRY RUN] No updates will be written.');
   console.log('');
 
-  console.log(`Fetching stations matching "${CHAIN_PREFIX}%"...`);
+  console.log(MISSING_MODE
+    ? 'Fetching stations with latitude = 0...'
+    : `Fetching stations matching "${CHAIN_PREFIX}%"...`);
   const stations = await fetchStations();
   console.log(`Found ${stations.length} stations to re-geocode.\n`);
 

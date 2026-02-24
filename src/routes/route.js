@@ -9,7 +9,27 @@ const { ValidationError, NotFoundError, NoPathError } = require('../utils/errors
 router.get('/', async (req, res, next) => {
   try {
     const params = validateRouteQuery(req.query);
-    console.log(`Route request: ${params.start_location} → ${params.finish_location} (range=${params.range_miles}mi, mpg=${params.mpg})`);
+
+    // Derive fuel parameters (backward compat: range_miles overrides tank_capacity)
+    const mpg = params.mpg;
+    let tankCapacity = params.tank_capacity;
+    let currentGallons = params.current_gallons;
+
+    if (params.range_miles != null && !req.query.tank_capacity) {
+      tankCapacity = params.range_miles / mpg;
+      if (!req.query.current_gallons) currentGallons = tankCapacity;
+    }
+
+    const fuelOpts = {
+      tankCapacity,
+      currentGallons,
+      mpg,
+      maxRangeMiles: tankCapacity * mpg,
+      deviationMiles: params.deviation_miles,
+      refuelThresholdPct: params.refuel_threshold_pct,
+    };
+
+    console.log(`Route request: ${params.start_location} → ${params.finish_location} (tank=${tankCapacity}gal, fuel=${currentGallons}gal, mpg=${mpg}, deviation=${fuelOpts.deviationMiles}mi)`);
 
     // 1. Geocode (skip if coordinates provided directly)
     const startCoords = (params.start_lat != null && params.start_lon != null)
@@ -45,9 +65,8 @@ router.get('/', async (req, res, next) => {
           routeData,
           startCoords,
           finishCoords,
-          params.range_miles,
-          params.mpg
-        ).then(({ stops, fuelCost }) => ({ routeData, stops, fuelCost }))
+          fuelOpts
+        ).then(({ stops, fuelCost, fuelLevels }) => ({ routeData, stops, fuelCost, fuelLevels }))
          .catch(() => null) // if one route fails optimization, skip it
       )
     );
@@ -59,8 +78,11 @@ router.get('/', async (req, res, next) => {
         total_distance_miles: r.routeData.distance_miles,
         total_duration_minutes: r.routeData.duration_minutes,
         fuel_cost: Math.round(r.fuelCost * 100) / 100,
+        toll_cost: r.routeData.toll_cost,
+        tolls: r.routeData.tolls,
         stops: r.stops,
         route_polyline: r.routeData.encodedPolyline,
+        fuel_levels: r.fuelLevels,
       }));
 
     if (routes.length === 0) {

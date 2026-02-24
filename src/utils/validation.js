@@ -10,8 +10,22 @@ const routeQuerySchema = Joi.object({
   finish_lon: Joi.number().min(-180).max(180),
   // Pipe-separated intermediate waypoints: "lat,lon|lat,lon|..."
   waypoints: Joi.string().allow(''),
-  range_miles: Joi.number().positive().default(500),
+  // Legacy param — kept for backward compat; no default so we can detect when it's absent
+  range_miles: Joi.number().positive(),
+  // Vehicle params
   mpg: Joi.number().positive().default(10),
+  tank_capacity: Joi.number().positive().default(250),        // gallons
+  current_gallons: Joi.number().min(0).default(250),          // gallons onboard now
+  // Planning params
+  deviation_miles: Joi.number().min(0).default(10),           // how far off route to search
+  refuel_threshold_pct: Joi.number().min(1).max(100).default(80), // % consumed before seeking stop
+}).custom((value, helpers) => {
+  if (value.current_gallons > value.tank_capacity) {
+    return helpers.error('any.invalid', {
+      message: 'current_gallons cannot exceed tank_capacity',
+    });
+  }
+  return value;
 });
 
 function validateRouteQuery(query) {

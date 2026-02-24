@@ -1,6 +1,8 @@
 -- Run this in the Supabase SQL Editor to create the RPC function
 -- that the Express app calls via supabase.rpc('find_stations_along_route', ...)
 
+DROP FUNCTION IF EXISTS find_stations_along_route(TEXT, DOUBLE PRECISION);
+
 CREATE OR REPLACE FUNCTION find_stations_along_route(
   route_wkt TEXT,
   buffer_meters DOUBLE PRECISION
@@ -13,6 +15,9 @@ RETURNS TABLE (
   city TEXT,
   state TEXT,
   retail_price NUMERIC,
+  our_price NUMERIC,
+  your_price NUMERIC,
+  your_savings NUMERIC,
   latitude DOUBLE PRECISION,
   longitude DOUBLE PRECISION,
   fraction DOUBLE PRECISION
@@ -28,6 +33,9 @@ AS $$
     fs.city,
     fs.state,
     fs.retail_price,
+    fs.our_price,
+    fs.your_price,
+    fs.your_savings,
     fs.latitude,
     fs.longitude,
     ST_LineLocatePoint(ST_GeomFromText(route_wkt, 4326), fs.location) AS fraction

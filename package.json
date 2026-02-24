@@ -10,7 +10,8 @@
     "geocode": "node scripts/geocode_stations.js",
     "regeocode-loves": "node scripts/regeocode_loves.js",
     "regeocode-caseys": "node scripts/regeocode_chain.js --chain CASEYS --display \"Casey's\"",
-    "regeocode-kwiktrip": "node scripts/regeocode_chain.js --chain \"KWIK TRIP\" --display \"Kwik Trip\""
+    "regeocode-kwiktrip": "node scripts/regeocode_chain.js --chain \"KWIK TRIP\" --display \"Kwik Trip\"",
+    "update-prices": "node scripts/update_price_columns.js --"
   },
   "keywords": [],
   "author": "",
