@@ -1,30 +1,30 @@
 # FuelRoute Express
 
-A fuel cost optimization API for long-haul trucking routes. Given an origin, destination, and vehicle specs, the API calculates the cheapest fuel stops along the driving route using spatial queries and graph-based optimization with realistic fuel tracking.
+A fuel cost optimization API for long-haul trucking routes. Given an origin, destination, and vehicle specs, the API calculates the cheapest fuel stops along the driving route using spatial queries and greedy windowed optimization with realistic fuel tracking.
 
 ## How It Works
 
 ```
 Client Request
   → Input validation (Joi)
-  → Geocode origin & destination (Nominatim)
+  → Geocode origin & destination (NextBillion.ai Discovery)
   → Compute truck route + alternatives (NextBillion.ai Directions API)
-  → Find fuel stations within configurable deviation of route (Supabase + PostGIS)
-  → Build threshold-aware cost graph and solve with Dijkstra
-  → Simulate journey: compute exact gallons, cost, and fuel level at each stop
+  → Find fuel stations within configurable deviation of route (Supabase fuel price data + PostGIS)
+  → Greedy windowed stop selection: cheapest station in lookahead window
+  → Track exact gallons, cost, and fuel level at each stop
   → Interpolate fuel levels across the full polyline for gradient rendering
   → Return routes with stops, fuel costs, encoded polyline, and fuel level array
 ```
 
 ### Optimization Algorithm
 
-1. **Station discovery** — A PostGIS spatial query (`find_stations_along_route`) finds all fuel stations within `deviation_miles` of the route geometry. Each station's position along the route is computed as a fraction via `ST_LineLocatePoint`.
+1. **Station discovery** — A PostGIS spatial query (`find_stations_along_route`) finds all fuel stations within `deviation_miles` of the route geometry. Each station's position along the route is computed as a fraction via `ST_LineLocatePoint`. Stations where the retail price is less than the negotiated "your price" are filtered out.
 
-2. **Graph construction** — Nodes are `[START, ...stations, END]`, sorted by distance along the route. Directed edges connect each node to downstream nodes within fuel range. A **refuel threshold** constraint filters edges: the truck will only stop at a station if the fuel level upon arrival would be at or below `refuel_threshold_pct`. This prevents unnecessary stops when the tank is still adequately full. Edges to the destination (END) are always permitted.
+2. **Node ordering** — Nodes are `[START, ...stations, END]`, sorted by distance along the route.
 
-3. **Cost minimization** — Edge weights represent fuel cost for the segment (`distance / mpg * price_per_gallon`). Dijkstra's algorithm finds the minimum-cost path from START to END, selecting only the stops that minimize total fuel spend while respecting the threshold constraint.
+3. **Greedy windowed stop selection** — The truck drives until fuel drops to the `refuel_threshold_pct` level, then searches a bounded lookahead window for the cheapest station. The window size equals the distance it takes to consume fuel from full down to the threshold (capped at half-threshold range to avoid running too low). The cheapest station in this window is selected and the truck fills to full. If no station exists in the preferred window, the search extends to the full remaining fuel range. This repeats until the destination is reachable without hitting the threshold.
 
-4. **Journey simulation** — After Dijkstra selects the optimal stops, a forward simulation computes exact gallons purchased at each stop (fill to full at intermediate stops; buy only what's needed at the last stop), actual fuel cost, and arrival/departure fuel percentages.
+4. **Fuel tracking** — At each selected stop, the algorithm records exact gallons purchased (always fills to full), fuel cost, and arrival/departure fuel percentages.
 
 5. **Fuel level interpolation** — The fuel level is computed at every decoded polyline coordinate by linearly interpolating consumption between path nodes. This produces a `fuel_levels` array (integers 0–100, same length as the decoded polyline) that clients can use for gradient-colored route rendering (green at 100% through red at 20% and below).
 
@@ -347,9 +347,9 @@ terraform apply
 │   ├── services/
 │   │   ├── geocodingService.js     # Nominatim geocoder
 │   │   ├── routingService.js       # NextBillion.ai directions + alternatives
-│   │   └── fuelOptimizationService.js  # Threshold-aware Dijkstra fuel optimizer
+│   │   └── fuelOptimizationService.js  # Greedy windowed fuel stop optimizer
 │   └── utils/
-│       ├── dijkstra.js             # Min-heap Dijkstra implementation
+│       ├── dijkstra.js             # Min-heap Dijkstra implementation (legacy)
 │       ├── errors.js               # Custom error classes
 │       └── validation.js           # Joi request validation
 ├── scripts/
