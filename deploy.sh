@@ -41,19 +41,10 @@ if gcloud run services describe "${SERVICE_NAME}" \
     --image "${IMAGE}" \
     --project "${PROJECT_ID}"
 else
-  echo "Creating new Cloud Run service..."
-  gcloud run deploy "${SERVICE_NAME}" \
-    --region "${REGION}" \
-    --image "${IMAGE}" \
-    --project "${PROJECT_ID}" \
-    --platform managed \
-    --allow-unauthenticated \
-    --port 3000 \
-    --memory 512Mi \
-    --cpu 1 \
-    --min-instances 0 \
-    --max-instances 2 \
-    --set-env-vars "NODE_ENV=production"
+  echo "ERROR: Cloud Run service '${SERVICE_NAME}' does not exist in project '${PROJECT_ID}'." >&2
+  echo "The service definition (env vars, secrets, service account) is managed by Terraform." >&2
+  echo "Create it first with:  cd terraform && terraform apply" >&2
+  exit 1
 fi
 
 echo ""
