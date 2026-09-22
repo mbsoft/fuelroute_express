@@ -1,5 +1,5 @@
--- Run this in the Supabase SQL Editor to create the RPC function
--- that the Express app calls via supabase.rpc('get_all_stations')
+-- Run this against the database (e.g. via psql) to create the SQL function
+-- that the Express app calls via SELECT * FROM get_all_stations()
 
 DROP FUNCTION IF EXISTS get_all_stations();
 

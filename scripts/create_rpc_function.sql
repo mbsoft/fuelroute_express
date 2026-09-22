@@ -1,5 +1,5 @@
--- Run this in the Supabase SQL Editor to create the RPC function
--- that the Express app calls via supabase.rpc('find_stations_along_route', ...)
+-- Run this against the database (e.g. via psql) to create the SQL function
+-- that the Express app calls via SELECT * FROM find_stations_along_route($1, $2)
 
 DROP FUNCTION IF EXISTS find_stations_along_route(TEXT, DOUBLE PRECISION);
 

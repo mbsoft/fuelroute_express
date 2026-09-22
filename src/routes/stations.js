@@ -1,14 +1,10 @@
 const express = require('express');
 const router = express.Router();
-const supabase = require('../config/db');
+const db = require('../config/db');
 
 router.get('/', async (req, res, next) => {
   try {
-    const { data: stations, error } = await supabase.rpc('get_all_stations');
-
-    if (error) {
-      throw new Error(`Supabase RPC error: ${error.message}`);
-    }
+    const { rows: stations } = await db.query('SELECT * FROM get_all_stations()');
 
     res.json({
       count: stations.length,

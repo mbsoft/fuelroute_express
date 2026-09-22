@@ -21,7 +21,7 @@
 require('dotenv').config();
 
 const axios = require('axios');
-const supabase = require('../src/config/db');
+const db = require('../src/config/db');
 
 const NB_API_KEY = process.env.NEXTBILLION_API_KEY;
 if (!NB_API_KEY) {
@@ -106,31 +106,10 @@ async function geocode(query) {
  * --chain mode: all stations whose name starts with CHAIN_PREFIX
  */
 async function fetchStations() {
-  const rows = [];
-  let offset = 0;
-  const pageSize = 1000;
-
-  while (true) {
-    let query = supabase
-      .from('fuel_api_fuelstation')
-      .select('id, name, address, city, state, latitude, longitude');
-
-    if (MISSING_MODE) {
-      query = query.eq('latitude', 0);
-    } else {
-      query = query.ilike('name', `${CHAIN_PREFIX}%`);
-    }
-
-    const { data, error } = await query.range(offset, offset + pageSize - 1);
-
-    if (error) throw new Error(`Failed to fetch stations: ${error.message}`);
-    if (!data || data.length === 0) break;
-
-    rows.push(...data);
-    offset += pageSize;
-    if (data.length < pageSize) break;
-  }
-
+  const select = 'SELECT id, name, address, city, state, latitude, longitude FROM fuel_api_fuelstation';
+  const { rows } = MISSING_MODE
+    ? await db.query(`${select} WHERE latitude = 0 ORDER BY id`)
+    : await db.query(`${select} WHERE name ILIKE $1 ORDER BY id`, [`${CHAIN_PREFIX}%`]);
   return rows;
 }
 
@@ -138,17 +117,15 @@ async function fetchStations() {
  * Update a station's coordinates and PostGIS location geometry.
  */
 async function updateStation(id, coords) {
-  const { error } = await supabase
-    .from('fuel_api_fuelstation')
-    .update({
-      latitude: coords.lat,
-      longitude: coords.lon,
-      location: JSON.stringify({ type: 'Point', coordinates: [coords.lon, coords.lat] }),
-    })
-    .eq('id', id);
-
-  if (error) {
-    console.error(`  Update error for id=${id}: ${error.message}`);
+  try {
+    await db.query(
+      `UPDATE fuel_api_fuelstation
+         SET latitude = $1, longitude = $2, location = ST_SetSRID(ST_MakePoint($2, $1), 4326)
+       WHERE id = $3`,
+      [coords.lat, coords.lon, id]
+    );
+  } catch (err) {
+    console.error(`  Update error for id=${id}: ${err.message}`);
     return false;
   }
   return true;
@@ -216,7 +193,9 @@ async function main() {
   console.log(`Failed:   ${failed}`);
 }
 
-main().catch((err) => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+main()
+  .catch((err) => {
+    console.error('Fatal error:', err);
+    process.exitCode = 1;
+  })
+  .finally(() => db.end());

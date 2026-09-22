@@ -8,7 +8,7 @@ require('dotenv').config();
 
 const crypto = require('crypto');
 const axios = require('axios');
-const supabase = require('../src/config/db');
+const db = require('../src/config/db');
 
 const NB_API_KEY = process.env.NEXTBILLION_API_KEY;
 if (!NB_API_KEY) {
@@ -76,28 +76,17 @@ async function geocode(query) {
  */
 async function fetchExistingStationKeys() {
   const keys = new Set();
-  let offset = 0;
-  const pageSize = 1000;
+  let rows;
+  try {
+    ({ rows } = await db.query('SELECT name, city, state FROM fuel_api_fuelstation'));
+  } catch (err) {
+    console.error('Warning: could not fetch existing stations:', err.message);
+    return keys;
+  }
 
-  while (true) {
-    const { data, error } = await supabase
-      .from('fuel_api_fuelstation')
-      .select('name, city, state')
-      .range(offset, offset + pageSize - 1);
-
-    if (error) {
-      console.error('Warning: could not fetch existing stations:', error.message);
-      return keys;
-    }
-    if (!data || data.length === 0) break;
-
-    for (const row of data) {
-      const key = `${(row.name || '').toUpperCase().trim()}|${(row.city || '').toUpperCase().trim()}|${(row.state || '').toUpperCase().trim()}`;
-      keys.add(key);
-    }
-
-    offset += pageSize;
-    if (data.length < pageSize) break;
+  for (const row of rows) {
+    const key = `${(row.name || '').toUpperCase().trim()}|${(row.city || '').toUpperCase().trim()}|${(row.state || '').toUpperCase().trim()}`;
+    keys.add(key);
   }
 
   return keys;
@@ -111,13 +100,7 @@ async function fetchStagingRows() {
   const existing = await fetchExistingStationKeys();
   console.log(`Found ${existing.size} existing stations.`);
 
-  const { data: allRows, error: fetchErr } = await supabase
-    .from('fuel_price_import')
-    .select('*');
-
-  if (fetchErr) {
-    throw new Error(`Failed to fetch staging rows: ${fetchErr.message}`);
-  }
+  const { rows: allRows } = await db.query('SELECT * FROM fuel_price_import');
 
   const rows = (allRows || []).filter((row) => {
     const key = `${(row.store || '').toUpperCase().trim()}|${(row.city || '').toUpperCase().trim()}|${(row.state || '').toUpperCase().trim()}`;
@@ -130,25 +113,18 @@ async function fetchStagingRows() {
 
 /**
  * Insert a geocoded station into fuel_api_fuelstation.
- * Uses Supabase PostGIS via an RPC or direct insert with raw SQL for the
- * geography column.
+ * Builds the PostGIS location geometry from the geocoded coordinates.
  */
 async function insertStation(row, coords) {
-  const { error } = await supabase.from('fuel_api_fuelstation').insert({
-    opis_id: generateOpisId(row),
-    name: row.store,
-    address: row.address,
-    city: row.city,
-    state: row.state,
-    rack_id: 0,
-    retail_price: row.retail_price,
-    latitude: coords.lat,
-    longitude: coords.lon,
-    location: JSON.stringify({ type: 'Point', coordinates: [coords.lon, coords.lat] }),
-  });
-
-  if (error) {
-    console.error(`  Insert error for "${row.store}" in ${row.city}, ${row.state}: ${error.message}`);
+  try {
+    await db.query(
+      `INSERT INTO fuel_api_fuelstation
+         (opis_id, name, address, city, state, rack_id, retail_price, latitude, longitude, location)
+       VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8, ST_SetSRID(ST_MakePoint($8, $7), 4326))`,
+      [generateOpisId(row), row.store, row.address, row.city, row.state, row.retail_price, coords.lat, coords.lon]
+    );
+  } catch (err) {
+    console.error(`  Insert error for "${row.store}" in ${row.city}, ${row.state}: ${err.message}`);
     return false;
   }
   return true;
@@ -159,30 +135,14 @@ function sleep(ms) {
 }
 
 async function printSchema() {
-  const { data, error } = await supabase.rpc('get_table_columns', {
-    table_name_param: 'fuel_api_fuelstation',
-  });
-  if (error) {
-    // Fallback: try to read one row to see column names
-    console.log('RPC not available, fetching a sample row instead...');
-    const { data: sample, error: sampleErr } = await supabase
-      .from('fuel_api_fuelstation')
-      .select('*')
-      .limit(1);
-    if (sampleErr) {
-      console.error('Error fetching sample:', sampleErr.message);
-    } else if (sample && sample.length > 0) {
-      console.log('Columns (from sample row):');
-      for (const [col, val] of Object.entries(sample[0])) {
-        console.log(`  ${col}: ${JSON.stringify(val)} (${typeof val})`);
-      }
-    } else {
-      console.log('Table is empty, cannot determine columns from sample.');
-    }
-    return;
-  }
+  const { rows } = await db.query(
+    `SELECT column_name, data_type, is_nullable
+       FROM information_schema.columns
+      WHERE table_name = 'fuel_api_fuelstation'
+      ORDER BY ordinal_position`
+  );
   console.log('Table schema:');
-  for (const col of data) {
+  for (const col of rows) {
     console.log(`  ${col.column_name} (${col.data_type}) ${col.is_nullable === 'NO' ? 'NOT NULL' : 'nullable'}`);
   }
 }
@@ -237,7 +197,9 @@ async function main() {
   console.log(`Failed:      ${failed}`);
 }
 
-main().catch((err) => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+main()
+  .catch((err) => {
+    console.error('Fatal error:', err);
+    process.exitCode = 1;
+  })
+  .finally(() => db.end());

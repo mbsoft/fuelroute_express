@@ -1,7 +1,6 @@
--- Run this in the Supabase SQL Editor to import fuel price data from CSV.
+-- Run this against the database (e.g. via psql) to import fuel price data from CSV.
 --
--- Step 1: Upload the CSV to Supabase Storage or use the Table Editor CSV import
---         to load data into the staging table below.
+-- Step 1: Load the CSV into the staging table below (psql \copy).
 -- Step 2: Run the UPDATE to merge prices into the existing fuel_api_fuelstation table.
 
 -- 1. Create staging table for the CSV import
@@ -27,7 +26,7 @@ TRUNCATE fuel_price_import;
 --    Option A: If using psql CLI:
 --      \copy fuel_price_import FROM 'Loves, PFJ, RR, Sapp, TA-Petro-Table 1.csv' WITH (FORMAT csv, HEADER true);
 --
---    Option B: In Supabase Dashboard, use Table Editor > Import CSV to load into fuel_price_import.
+--    Option B: gcloud sql import csv INSTANCE gs://BUCKET/file.csv --database=DB --table=fuel_price_import
 
 -- 4. Verify the import
 -- SELECT count(*) FROM fuel_price_import;

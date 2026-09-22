@@ -20,6 +20,7 @@ resource "google_project_service" "apis" {
     "run.googleapis.com",
     "artifactregistry.googleapis.com",
     "secretmanager.googleapis.com",
+    "sqladmin.googleapis.com",
   ])
   service            = each.value
   disable_on_destroy = false
@@ -34,9 +35,9 @@ resource "google_artifact_registry_repository" "repo" {
   depends_on = [google_project_service.apis]
 }
 
-# Store Supabase service role key in Secret Manager
-resource "google_secret_manager_secret" "supabase_key" {
-  secret_id = "${var.service_name}-supabase-key"
+# Store Cloud SQL database password in Secret Manager
+resource "google_secret_manager_secret" "db_password" {
+  secret_id = "${var.service_name}-db-password"
 
   replication {
     auto {}
@@ -45,9 +46,9 @@ resource "google_secret_manager_secret" "supabase_key" {
   depends_on = [google_project_service.apis]
 }
 
-resource "google_secret_manager_secret_version" "supabase_key" {
-  secret      = google_secret_manager_secret.supabase_key.id
-  secret_data = var.supabase_service_role_key
+resource "google_secret_manager_secret_version" "db_password" {
+  secret      = google_secret_manager_secret.db_password.id
+  secret_data = var.db_password
 }
 
 # Store NextBillion.ai API key in Secret Manager
@@ -73,8 +74,8 @@ resource "google_service_account" "cloudrun" {
 }
 
 # Grant the service account access to secrets
-resource "google_secret_manager_secret_iam_member" "cloudrun_supabase_access" {
-  secret_id = google_secret_manager_secret.supabase_key.id
+resource "google_secret_manager_secret_iam_member" "cloudrun_db_password_access" {
+  secret_id = google_secret_manager_secret.db_password.id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.cloudrun.email}"
 }
@@ -83,6 +84,13 @@ resource "google_secret_manager_secret_iam_member" "cloudrun_nextbillion_access"
   secret_id = google_secret_manager_secret.nextbillion_key.id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.cloudrun.email}"
+}
+
+# Allow the service account to connect to Cloud SQL
+resource "google_project_iam_member" "cloudrun_cloudsql_client" {
+  project = var.project_id
+  role    = "roles/cloudsql.client"
+  member  = "serviceAccount:${google_service_account.cloudrun.email}"
 }
 
 # Cloud Run service
@@ -99,6 +107,14 @@ resource "google_cloud_run_v2_service" "app" {
       max_instance_count = 2
     }
 
+    # Mounts the Cloud SQL unix socket at /cloudsql/<INSTANCE_CONNECTION_NAME>
+    volumes {
+      name = "cloudsql"
+      cloud_sql_instance {
+        instances = [var.cloud_sql_connection_name]
+      }
+    }
+
     containers {
       image = "${var.region}-docker.pkg.dev/${var.project_id}/${var.service_name}/${var.service_name}:latest"
 
@@ -106,16 +122,31 @@ resource "google_cloud_run_v2_service" "app" {
         container_port = 3000
       }
 
-      env {
-        name  = "SUPABASE_URL"
-        value = var.supabase_url
+      volume_mounts {
+        name       = "cloudsql"
+        mount_path = "/cloudsql"
       }
 
       env {
-        name = "SUPABASE_SERVICE_ROLE_KEY"
+        name  = "INSTANCE_CONNECTION_NAME"
+        value = var.cloud_sql_connection_name
+      }
+
+      env {
+        name  = "DB_NAME"
+        value = var.db_name
+      }
+
+      env {
+        name  = "DB_USER"
+        value = var.db_user
+      }
+
+      env {
+        name = "DB_PASSWORD"
         value_source {
           secret_key_ref {
-            secret  = google_secret_manager_secret.supabase_key.secret_id
+            secret  = google_secret_manager_secret.db_password.secret_id
             version = "latest"
           }
         }
@@ -141,10 +172,11 @@ resource "google_cloud_run_v2_service" "app" {
   }
 
   depends_on = [
-    google_secret_manager_secret_version.supabase_key,
+    google_secret_manager_secret_version.db_password,
     google_secret_manager_secret_version.nextbillion_key,
-    google_secret_manager_secret_iam_member.cloudrun_supabase_access,
+    google_secret_manager_secret_iam_member.cloudrun_db_password_access,
     google_secret_manager_secret_iam_member.cloudrun_nextbillion_access,
+    google_project_iam_member.cloudrun_cloudsql_client,
   ]
 }
 
