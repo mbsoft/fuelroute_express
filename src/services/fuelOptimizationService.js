@@ -1,4 +1,4 @@
-const supabase = require('../config/db');
+const db = require('../config/db');
 
 const MILES_TO_METERS = 1609.34;
 const MAX_WKT_POINTS = 500;
@@ -6,7 +6,7 @@ const MAX_WKT_POINTS = 500;
 /**
  * Build a WKT LINESTRING from route geometry points.
  * Route geometry is [[lat, lon], ...], PostGIS needs LINESTRING(lon lat, ...).
- * Downsamples to MAX_WKT_POINTS to avoid Supabase statement timeouts on long routes.
+ * Downsamples to MAX_WKT_POINTS to avoid slow spatial queries on long routes.
  */
 function buildWktLineString(points) {
   let sampled = points;
@@ -224,15 +224,11 @@ async function findOptimalStops(routeData, start, finish, opts) {
   // Configurable buffer distance for spatial query
   const bufferMeters = deviationMiles * MILES_TO_METERS;
 
-  // Call the PostGIS RPC function via Supabase REST API
-  const { data: stations, error } = await supabase.rpc(
-    'find_stations_along_route',
-    { route_wkt: wkt, buffer_meters: bufferMeters }
+  // Call the PostGIS SQL function
+  const { rows: stations } = await db.query(
+    'SELECT * FROM find_stations_along_route($1, $2)',
+    [wkt, bufferMeters]
   );
-
-  if (error) {
-    throw new Error(`Supabase RPC error: ${error.message}`);
-  }
 
   // Build station list with distance from start, excluding stations where
   // the retail price is less than "your price" (no savings benefit)

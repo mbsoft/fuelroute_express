@@ -3,8 +3,8 @@
  * in fuel_api_fuelstation by matching CSV "Store" → DB "name".
  *
  * Prerequisites:
- *   1. Run scripts/add_price_columns.sql in Supabase SQL Editor first.
- *   2. Ensure .env has SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.
+ *   1. Run scripts/add_price_columns.sql against the database first.
+ *   2. Ensure .env has the DB_* connection settings (see .env.example).
  *
  * Usage:  node scripts/update_price_columns.js <csv-file>
  *         node scripts/update_price_columns.js "Speedway-Table 1.csv"
@@ -14,7 +14,7 @@ require('dotenv').config();
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const supabase = require('../src/config/db');
+const db = require('../src/config/db');
 
 const csvArg = process.argv[2];
 if (!csvArg) {
@@ -105,25 +105,11 @@ function readCsv() {
  */
 async function buildStationMap() {
   const map = new Map();
-  let from = 0;
-  const pageSize = 1000;
+  const { rows } = await db.query('SELECT id, name, city, state FROM fuel_api_fuelstation ORDER BY id');
 
-  while (true) {
-    const { data, error } = await supabase
-      .from('fuel_api_fuelstation')
-      .select('id, name, city, state')
-      .range(from, from + pageSize - 1);
-
-    if (error) throw new Error(`Supabase select error: ${error.message}`);
-    if (!data || data.length === 0) break;
-
-    for (const row of data) {
-      const key = `${(row.name || '').toUpperCase().trim()}|${(row.city || '').toUpperCase().trim()}|${(row.state || '').toUpperCase().trim()}`;
-      map.set(key, row.id);
-    }
-
-    from += pageSize;
-    if (data.length < pageSize) break;
+  for (const row of rows) {
+    const key = `${(row.name || '').toUpperCase().trim()}|${(row.city || '').toUpperCase().trim()}|${(row.state || '').toUpperCase().trim()}`;
+    map.set(key, row.id);
   }
 
   return map;
@@ -165,17 +151,18 @@ async function main() {
   // Update each matched station by id
   let updated = 0;
   let updateFailed = 0;
-  for (const { id, ...fields } of updates) {
-    const { error } = await supabase
-      .from('fuel_api_fuelstation')
-      .update(fields)
-      .eq('id', id);
-
-    if (error) {
-      console.error(`  Update failed id ${id}: ${error.message}`);
-      updateFailed++;
-    } else {
+  for (const u of updates) {
+    try {
+      await db.query(
+        `UPDATE fuel_api_fuelstation
+            SET retail_price = $1, our_price = $2, savings = $3, fee = $4, your_price = $5, your_savings = $6
+          WHERE id = $7`,
+        [u.retail_price, u.our_price, u.savings, u.fee, u.your_price, u.your_savings, u.id]
+      );
       updated++;
+    } catch (err) {
+      console.error(`  Update failed id ${u.id}: ${err.message}`);
+      updateFailed++;
     }
   }
 
@@ -183,29 +170,22 @@ async function main() {
   let inserted = 0;
   let insertFailed = 0;
   for (const row of inserts) {
-    const { error } = await supabase.from('fuel_api_fuelstation').insert({
-      opis_id: generateOpisId(row.store, row.city, row.state),
-      name: row.store,
-      address: row.address,
-      city: row.city,
-      state: row.state,
-      rack_id: 0,
-      retail_price: row.retail_price,
-      our_price: row.our_price,
-      savings: row.savings,
-      fee: row.fee,
-      your_price: row.your_price,
-      your_savings: row.your_savings,
-      latitude: 0,
-      longitude: 0,
-      location: JSON.stringify({ type: 'Point', coordinates: [0, 0] }),
-    });
-
-    if (error) {
-      console.error(`  Insert failed "${row.store}" ${row.city}, ${row.state}: ${error.message}`);
-      insertFailed++;
-    } else {
+    try {
+      await db.query(
+        `INSERT INTO fuel_api_fuelstation
+           (opis_id, name, address, city, state, rack_id, retail_price, our_price, savings, fee,
+            your_price, your_savings, latitude, longitude, location)
+         VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8, $9, $10, $11, 0, 0, ST_SetSRID(ST_MakePoint(0, 0), 4326))`,
+        [
+          generateOpisId(row.store, row.city, row.state),
+          row.store, row.address, row.city, row.state,
+          row.retail_price, row.our_price, row.savings, row.fee, row.your_price, row.your_savings,
+        ]
+      );
       inserted++;
+    } catch (err) {
+      console.error(`  Insert failed "${row.store}" ${row.city}, ${row.state}: ${err.message}`);
+      insertFailed++;
     }
   }
 
@@ -214,7 +194,9 @@ async function main() {
   if (insertFailed) console.log(`  ${insertFailed} insert failures`);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+main()
+  .catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+  })
+  .finally(() => db.end());

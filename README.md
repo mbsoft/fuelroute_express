@@ -9,7 +9,7 @@ Client Request
   → Input validation (Joi)
   → Geocode origin & destination (NextBillion.ai Discovery)
   → Compute truck route + alternatives (NextBillion.ai Directions API)
-  → Find fuel stations within configurable deviation of route (Supabase fuel price data + PostGIS)
+  → Find fuel stations within configurable deviation of route (Cloud SQL fuel price data + PostGIS)
   → Greedy windowed stop selection: cheapest station in lookahead window
   → Track exact gallons, cost, and fuel level at each stop
   → Interpolate fuel levels across the full polyline for gradient rendering
@@ -170,7 +170,7 @@ Raw OpenAPI 3.0.3 JSON specification.
 ## Tech Stack
 
 - **Runtime:** Node.js 20, Express 5
-- **Database:** Supabase (PostgreSQL + PostGIS)
+- **Database:** Google Cloud SQL (PostgreSQL + PostGIS)
 - **Geocoding:** OpenStreetMap Nominatim (route endpoints), NextBillion.ai Discover (fuel stations)
 - **Routing:** NextBillion.ai Directions API (truck mode, up to 3 alternative routes)
 - **Infrastructure:** Google Cloud Run, Artifact Registry, Secret Manager (Terraform)
@@ -178,7 +178,8 @@ Raw OpenAPI 3.0.3 JSON specification.
 ## Prerequisites
 
 - Node.js >= 20
-- A [Supabase](https://supabase.com) project with PostGIS enabled
+- A Google Cloud SQL for PostgreSQL instance with the `postgis` extension enabled
+- [`cloud-sql-proxy`](https://cloud.google.com/sql/docs/postgres/sql-proxy) for local development
 - A [NextBillion.ai](https://nextbillion.ai) API key
 
 ## Setup
@@ -199,14 +200,25 @@ cp .env.example .env
 
 ```env
 PORT=3000
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+DB_NAME=postgres
+DB_USER=postgres
+DB_PASSWORD=your-db-password
+DB_HOST=127.0.0.1
+DB_PORT=5432
 NEXTBILLION_API_KEY=your-nextbillion-api-key
 ```
 
+For local development, run the Cloud SQL Auth Proxy in another terminal so `DB_HOST=127.0.0.1` reaches the instance:
+
+```bash
+cloud-sql-proxy your-gcp-project-id:us-central1:your-instance
+```
+
+On Cloud Run, `INSTANCE_CONNECTION_NAME` is set instead of `DB_HOST`, and the app connects through the `/cloudsql` unix socket.
+
 ### 3. Set up the database
 
-Run the following SQL scripts in the Supabase SQL Editor (in order):
+Run the following SQL scripts against the database with `psql` (in order):
 
 1. **Create the RPC function** — `scripts/create_rpc_function.sql`
 
@@ -319,9 +331,10 @@ This script:
 
 Optional Terraform configuration is available in `terraform/` for managing:
 - **Artifact Registry** — Docker image repository
-- **Secret Manager** — stores `SUPABASE_SERVICE_ROLE_KEY` and `NEXTBILLION_API_KEY`
+- **Secret Manager** — stores `DB_PASSWORD` and `NEXTBILLION_API_KEY`
 - **Cloud Run v2 service** — scales 0–2 instances, 1 vCPU / 512 Mi RAM, public ingress
-- **Service account** — dedicated identity with secret access
+- **Service account** — dedicated identity with secret access and `roles/cloudsql.client`
+- **Cloud SQL connection** — mounts the instance's unix socket into the Cloud Run container
 
 ```bash
 cd terraform
@@ -338,7 +351,7 @@ terraform apply
 ├── src/
 │   ├── index.js                    # Express app entry point
 │   ├── config/
-│   │   ├── db.js                   # Supabase client
+│   │   ├── db.js                   # Postgres (Cloud SQL) connection pool
 │   │   └── swagger.js              # OpenAPI spec config
 │   ├── middleware/
 │   │   └── errorHandler.js         # Global error handler

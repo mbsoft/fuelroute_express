@@ -19,7 +19,6 @@
   "type": "commonjs",
   "dependencies": {
     "@mapbox/polyline": "^1.2.1",
-    "@supabase/supabase-js": "^2.97.0",
     "axios": "^1.13.5",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
@@ -27,6 +26,7 @@
     "express-rate-limit": "^8.2.1",
     "helmet": "^8.1.0",
     "joi": "^18.0.2",
+    "pg": "^8.23.0",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1"
   }
