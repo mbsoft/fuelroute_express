@@ -314,7 +314,14 @@ Temporary table for bulk-importing fuel price data from CSV files.
 
 The project deploys to **Google Cloud Run**.
 
-### Build & Deploy
+### CI/CD (GitHub Actions)
+
+- **CI** (`.github/workflows/ci.yml`) runs on every PR and push to `main`: `npm ci`, a syntax check of all JS files, and a Docker build.
+- **Deploy** (`.github/workflows/deploy.yml`) runs on push to `main` (or manually via *Run workflow*). It builds the image, pushes it to Artifact Registry tagged with the commit SHA and `latest`, and updates the `fuelroute-express` Cloud Run service to that image. Env vars, secrets and the Cloud SQL mount stay as Terraform defined them.
+
+Authentication uses Workload Identity Federation (no keys): the `fuelroute-express` provider in the `github` pool of `nextbillion-se-team-2026` lets this repo impersonate `github-deployer@nextbillion-se-team-2026.iam.gserviceaccount.com`. The repo variables `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_DEPLOY_SERVICE_ACCOUNT` point the workflow at them.
+
+### Manual Build & Deploy
 
 ```bash
 bash deploy.sh
